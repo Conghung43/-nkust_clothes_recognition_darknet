@@ -17,6 +17,7 @@ from ctypes import *
 import math
 import random
 import os
+import threading
 import numpy as np
 from shapely.geometry import Point
 from shapely.geometry.polygon import Polygon
@@ -33,6 +34,7 @@ import time
 from ast import literal_eval
 from utils import get_color_two_side_clothes as color_handle
 from threading import Thread
+import inspect
 
 class BOX(Structure):
     _fields_ = [("x", c_float),
@@ -283,112 +285,127 @@ def send_image_to_mask_server(image, camera_uuid):
         return []
 
 def clustering(object_data, pt1, pt2, object_color, bounding_box_size, frame, person_count, sub_config, fps, my_logger):
-    
-    if type(sub_config) is str:
-        mode_name = 'wear'
-        area = [[0.1,0.4],[0.9,0.4],[0.9,0.9],[0.1,0.9]]
-        area = np.array([x*np.array(frame.shape)[:2] for x in area]).astype(int)
-        camera_uuid = sub_config
-    else:
-        mode_name, area, _, _, mode_no, camera_uuid = sub_config
+    function_name = inspect.currentframe().f_code.co_name
+    try:
+        if type(sub_config) is str:
+            mode_name = 'wear'
+            area = [[0.1,0.4],[0.9,0.4],[0.9,0.9],[0.1,0.9]]
+            area = np.array([x*np.array(frame.shape)[:2] for x in area]).astype(int)
+            camera_uuid = sub_config
+        else:
+            mode_name, area, _, _, mode_no, camera_uuid = sub_config
 
-        area = area.replace('{"x":','[').replace('"y":','').replace('}',']')
-        area = ast.literal_eval(area)
+            area = area.replace('{"x":','[').replace('"y":','').replace('}',']')
+            area = ast.literal_eval(area)
 
-        area = np.array([x*np.array(frame.shape)[:2] for x in area]).astype(int)
+            area = np.array([x*np.array(frame.shape)[:2] for x in area]).astype(int)
+        my_logger.debug(str(datetime.now()) + ' START ' + function_name  + ' camera_name: ' + camera_uuid)
+        # for point in area:
+        #     frame = cv2.circle(frame,tuple(point), 5, (0,0,255), -1)
 
-    # for point in area:
-    #     frame = cv2.circle(frame,tuple(point), 5, (0,0,255), -1)
+        cX, cY = (np.array(pt1) + np.array(pt2))/2
+        # cY = pt2[1]
+        chanel = find_nearest_point( cX, cY, object_data.trajectory, bounding_box_size)
+        polygon = Polygon(area)
 
-    cX, cY = (np.array(pt1) + np.array(pt2))/2
-    # cY = pt2[1]
-    chanel = find_nearest_point( cX, cY, object_data.trajectory, bounding_box_size)
-    polygon = Polygon(area)
+        if chanel >= 0:
 
-    if chanel >= 0:
+            # print(chanel)
 
-        # print(chanel)
+            # if cY < 0.1*frame.shape[0] or cY > 0.9*frame.shape[0] or cX < 0.1*frame.shape[1] or cX > 0.9*frame.shape[1]:
+            #     object_data.trajectory[chanel] = np.zeros(shape=(0,2))
+            #     object_data.trajectory_length[chanel] = 0
+            #     object_data.flag[chanel] = False
+            #     object_data.is_capture[chanel] = False
+            #     return object_data
 
-        # if cY < 0.1*frame.shape[0] or cY > 0.9*frame.shape[0] or cX < 0.1*frame.shape[1] or cX > 0.9*frame.shape[1]:
-        #     object_data.trajectory[chanel] = np.zeros(shape=(0,2))
-        #     object_data.trajectory_length[chanel] = 0
-        #     object_data.flag[chanel] = False
-        #     object_data.is_capture[chanel] = False
-        #     return object_data
+            if pt1[1] < 0.1*frame.shape[0] or pt2[1] > 0.9*frame.shape[0] or pt1[0] < 0.1*frame.shape[1] or pt2[0] > 0.9*frame.shape[1]:
+                object_data.trajectory[chanel] = np.zeros(shape=(0,2))
+                object_data.trajectory_length[chanel] = 0
+                object_data.flag[chanel] = False
+                object_data.is_capture[chanel] = False
+                return object_data
 
-        if pt1[1] < 0.1*frame.shape[0] or pt2[1] > 0.9*frame.shape[0] or pt1[0] < 0.1*frame.shape[1] or pt2[0] > 0.9*frame.shape[1]:
-            object_data.trajectory[chanel] = np.zeros(shape=(0,2))
-            object_data.trajectory_length[chanel] = 0
-            object_data.flag[chanel] = False
-            object_data.is_capture[chanel] = False
-            return object_data
+            object_data.trajectory_length[chanel] += 1
+            
+            point = Point([cX, cY])
 
-        object_data.trajectory_length[chanel] += 1
-        
-        point = Point([cX, cY])
+            in_poly = polygon.contains(point)
 
-        in_poly = polygon.contains(point)
+            if in_poly:
+                object_data.flag[chanel] = True
 
-        if in_poly:
-            object_data.flag[chanel] = True
+            if not object_data.is_capture[chanel] and object_data.flag[chanel]:
+                occurred_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                h, w, _ = frame.shape
+                if mode_name is 'wear':
+                    my_logger.debug(str(datetime.now()) + ' clustering, mode_name is wear ' + occurred_time + mode_name + camera_uuid)
+                    object_data.is_capture[chanel] = True
+                    people_crop =  frame[pt1[1]:pt2[1], pt1[0]:pt2[0]]
+                    cv2.imwrite('image_log/crop_image_{}.jpg'.format(str(time.time())), people_crop)
+                    color_vector_list = send_image_to_mask_server(people_crop, camera_uuid)
+                    color_list = color_handle.get_surrounded_color(people_crop, pt1,pt2)
+                    # pt1, pt2 = get_crop_extend(pt1,pt2,h,w)
+                    frame_crop = frame[pt1[1]:pt2[1], pt1[0]:pt2[0]]
+                    type_data = send_image2another_model(frame_crop)
 
-        if not object_data.is_capture[chanel] and object_data.flag[chanel]:
-            occurred_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            h, w, _ = frame.shape
-            if mode_name is 'wear':
-                my_logger.debug(str(datetime.now()) + ' clustering, mode_name is wear ' + occurred_time + mode_name + camera_uuid)
-                object_data.is_capture[chanel] = True
-                people_crop =  frame[pt1[1]:pt2[1], pt1[0]:pt2[0]]
-                cv2.imwrite('image_log/crop_image_{}.jpg'.format(str(time.time())), people_crop)
-                color_vector_list = send_image_to_mask_server(people_crop, camera_uuid)
-                color_list = color_handle.get_surrounded_color(people_crop, pt1,pt2)
-                # pt1, pt2 = get_crop_extend(pt1,pt2,h,w)
-                frame_crop = frame[pt1[1]:pt2[1], pt1[0]:pt2[0]]
-                type_data = send_image2another_model(frame_crop)
-
-                top_list = ["short sleeve top","long sleeve top","short sleeve outwear","long sleeve outwear","vest","sling"]
-                button_list = ["shorts","trousers","skirt","short sleeve dress","long sleeve dress","vest dress","sling dress"]
-                # type_data = []
-                if len(type_data) == 0:
-                    type_data = [{'type':'short sleeve top', 'proportion': 100, 'colors': [color_handle.rgb_to_hex(color_list[0])]}]
-                    if len(color_list) > 1:
-                        type_data.append({'type':'trousers', 'proportion': 100, 'colors': [color_handle.rgb_to_hex(color_list[1])]})
-                else:
-                    top_exist = False
-                    for type_dt in type_data:
-                        if type_dt['type'] in top_list:
-                            color_diff = color_handle.color_diff(color_handle.hex_to_rgb(type_dt['colors'][0]), color_list[0],20) 
-                            if color_diff:
-                                type_dt['colors'].append(color_handle.rgb_to_hex(color_list[0]))
-                            top_exist = True
-                    if not top_exist:
-                        type_data.append({'type':'short sleeve top', 'proportion': 100, 'colors': [color_handle.rgb_to_hex(color_list[0])]})
-                    # send_image(frame, occurred_time, "82b13762-e993-43f1-b22c-8fdb4e5c5d8f", mode_name, type_data, camera_uuid, color_vector_list)
-                    Thread(target=send_image, args= (frame, 
-                                                    occurred_time, 
-                                                    "82b13762-e993-43f1-b22c-8fdb4e5c5d8f", 
-                                                    mode_name, 
-                                                    type_data, 
-                                                    camera_uuid, 
-                                                    color_vector_list)).start()
-                my_logger.debug(str(datetime.now()) + 'wear sent!' + str(type_data))
-                cv2.imwrite('image_log/wear_image_{}.jpg'.format(str(time.time())), frame)
-            elif mode_name in ["wander", "stay"]:
-                if object_data.trajectory_length[chanel] > 300:# set up time in config
-                    my_logger.debug(str(datetime.now()) + ' clustering, mode_name is not wear ' + occurred_time + mode_name + camera_uuid)
-                    if in_poly:
-                        print('Dou liu')
-                        # send_image(frame, occurred_time, "82b13762-e993-43f1-b22c-8fdb4e5c5d8f", mode_name, [{'type':'people', 'proportion':100, 'colors': []}] , camera_uuid, [])
-                        Thread(target=send_image, args= (frame, 
-                                                        occurred_time, 
-                                                        "82b13762-e993-43f1-b22c-8fdb4e5c5d8f", 
-                                                        mode_name, 
-                                                        [{'type':'people', 'proportion':100, 'colors': []}], 
-                                                        camera_uuid, 
-                                                        [])).start()
+                    top_list = ["short sleeve top","long sleeve top","short sleeve outwear","long sleeve outwear","vest","sling"]
+                    button_list = ["shorts","trousers","skirt","short sleeve dress","long sleeve dress","vest dress","sling dress"]
+                    # type_data = []
+                    if len(type_data) == 0:
+                        type_data = [{'type':'short sleeve top', 'proportion': 100, 'colors': [color_handle.rgb_to_hex(color_list[0])]}]
+                        if len(color_list) > 1:
+                            type_data.append({'type':'trousers', 'proportion': 100, 'colors': [color_handle.rgb_to_hex(color_list[1])]})
                     else:
-                        print('paihui')
-                        # send_image(frame, occurred_time, "82b13762-e993-43f1-b22c-8fdb4e5c5d8f", mode_name, [{'type':'people', 'proportion':100, 'colors': []}], camera_uuid, [])
+                        top_exist = False
+                        for type_dt in type_data:
+                            if type_dt['type'] in top_list:
+                                color_diff = color_handle.color_diff(color_handle.hex_to_rgb(type_dt['colors'][0]), color_list[0],20) 
+                                if color_diff:
+                                    type_dt['colors'].append(color_handle.rgb_to_hex(color_list[0]))
+                                top_exist = True
+                        if not top_exist:
+                            type_data.append({'type':'short sleeve top', 'proportion': 100, 'colors': [color_handle.rgb_to_hex(color_list[0])]})
+                        # send_image(frame, occurred_time, "82b13762-e993-43f1-b22c-8fdb4e5c5d8f", mode_name, type_data, camera_uuid, color_vector_list)
+                        Thread(target=send_image, args= (frame, 
+                                                        occurred_time, 
+                                                        "82b13762-e993-43f1-b22c-8fdb4e5c5d8f", 
+                                                        mode_name, 
+                                                        type_data, 
+                                                        camera_uuid, 
+                                                        color_vector_list)).start()
+                    my_logger.debug(str(datetime.now()) + 'wear sent!' + str(type_data))
+                    cv2.imwrite('image_log/wear_image_{}.jpg'.format(str(time.time())), frame)
+                elif mode_name in ["wander", "stay"]:
+                    if object_data.trajectory_length[chanel] > 300:# set up time in config
+                        my_logger.debug(str(datetime.now()) + ' clustering, mode_name is not wear ' + occurred_time + mode_name + camera_uuid)
+                        if in_poly:
+                            print('Dou liu')
+                            # send_image(frame, occurred_time, "82b13762-e993-43f1-b22c-8fdb4e5c5d8f", mode_name, [{'type':'people', 'proportion':100, 'colors': []}] , camera_uuid, [])
+                            Thread(target=send_image, args= (frame, 
+                                                            occurred_time, 
+                                                            "82b13762-e993-43f1-b22c-8fdb4e5c5d8f", 
+                                                            mode_name, 
+                                                            [{'type':'people', 'proportion':100, 'colors': []}], 
+                                                            camera_uuid, 
+                                                            [])).start()
+                        else:
+                            print('paihui')
+                            # send_image(frame, occurred_time, "82b13762-e993-43f1-b22c-8fdb4e5c5d8f", mode_name, [{'type':'people', 'proportion':100, 'colors': []}], camera_uuid, [])
+                            Thread(target=send_image, args= (frame, 
+                                                            occurred_time, 
+                                                            "82b13762-e993-43f1-b22c-8fdb4e5c5d8f", 
+                                                            mode_name, 
+                                                            [{'type':'people', 'proportion':100, 'colors': []}], 
+                                                            camera_uuid, 
+                                                            [])).start()
+                            # Pai hui
+                        object_data.is_capture[chanel] = True
+                else:
+                    if in_poly:
+                        # take picture here
+                        print('night invasion')
+                        # send_image(frame, occurred_time, "82b13762-e993-43f1-b22c-8fdb4e5c5d8f", mode_name, [{'type':'people', 'proportion':100, 'colors': []}], camera_uuid,[])
                         Thread(target=send_image, args= (frame, 
                                                         occurred_time, 
                                                         "82b13762-e993-43f1-b22c-8fdb4e5c5d8f", 
@@ -396,44 +413,32 @@ def clustering(object_data, pt1, pt2, object_color, bounding_box_size, frame, pe
                                                         [{'type':'people', 'proportion':100, 'colors': []}], 
                                                         camera_uuid, 
                                                         [])).start()
-                        # Pai hui
-                    object_data.is_capture[chanel] = True
-            else:
-                if in_poly:
-                    # take picture here
-                    print('night invasion')
-                    # send_image(frame, occurred_time, "82b13762-e993-43f1-b22c-8fdb4e5c5d8f", mode_name, [{'type':'people', 'proportion':100, 'colors': []}], camera_uuid,[])
-                    Thread(target=send_image, args= (frame, 
-                                                    occurred_time, 
-                                                    "82b13762-e993-43f1-b22c-8fdb4e5c5d8f", 
-                                                    mode_name, 
-                                                    [{'type':'people', 'proportion':100, 'colors': []}], 
-                                                    camera_uuid, 
-                                                    [])).start()
-                    object_data.is_capture[chanel] = True
+                        object_data.is_capture[chanel] = True
 
-        object_data.trajectory[chanel] = np.append(object_data.trajectory[chanel],[[cX,cY]],axis = 0)
+            object_data.trajectory[chanel] = np.append(object_data.trajectory[chanel],[[cX,cY]],axis = 0)
 
-    else: 
-        flag = False 
-        for i in range(len(object_data.trajectory)):
+        else: 
+            flag = False 
+            for i in range(len(object_data.trajectory)):
 
-            if object_data.trajectory[i].size == 0 and cX != 0: #Handle empty list
-                object_data.trajectory[i] = np.append(object_data.trajectory[i],[[cX,cY]],axis = 0)
-                object_data.trajectory_length[i] = 0
-                object_data.flag[i] = False
-                flag = True
+                if object_data.trajectory[i].size == 0 and cX != 0: #Handle empty list
+                    object_data.trajectory[i] = np.append(object_data.trajectory[i],[[cX,cY]],axis = 0)
+                    object_data.trajectory_length[i] = 0
+                    object_data.flag[i] = False
+                    flag = True
 
-        if not flag:
-            object_data.trajectory.append(np.zeros(shape=(0,2)))
-            object_data.trajectory[-1] = np.append(object_data.trajectory[-1],[[cX,cY]],axis = 0)#add to new track
-            object_data.trajectory_length.append(0)
-            object_data.trajectory_length[-1] = 0
-            object_data.flag.append(False)
-            object_data.flag[-1] = False
-            object_data.is_capture.append(False)
-            object_data.is_capture[-1] = False
-                                
+            if not flag:
+                object_data.trajectory.append(np.zeros(shape=(0,2)))
+                object_data.trajectory[-1] = np.append(object_data.trajectory[-1],[[cX,cY]],axis = 0)#add to new track
+                object_data.trajectory_length.append(0)
+                object_data.trajectory_length[-1] = 0
+                object_data.flag.append(False)
+                object_data.flag[-1] = False
+                object_data.is_capture.append(False)
+                object_data.is_capture[-1] = False
+    except Exception as ex:
+        my_logger.debug(str(datetime.now()) + ' ERROR ' + function_name  + ' camera_name: ' + camera_uuid + str(ex))
+    my_logger.debug(str(datetime.now()) + ' END ' + function_name  + ' camera_name: ' + camera_uuid + ' Thread count = ' + str(threading.activeCount()))
     return object_data
 
 class DominantColors:
@@ -573,6 +578,12 @@ def draw_boxes_clothes(detections, frame, camera_uuid):
 # draw_boxes_clothes(detections, frame, '2677d98d-873d-4168-b05f-29a809935830')
 
 def draw_boxes(detections, frame, object_data, sub_config, oldest_file, fps, my_logger):
+    function_name = inspect.currentframe().f_code.co_name
+    if type(sub_config) is str:
+        camera_uuid = sub_config
+    else:
+        _, _, _, _, _, camera_uuid = sub_config
+    my_logger.debug(str(datetime.now()) + ' START ' + function_name  + ' camera_name: ' + camera_uuid)
     try:
         # print('draw_boxes')
         person_count = 0
@@ -618,6 +629,8 @@ def draw_boxes(detections, frame, object_data, sub_config, oldest_file, fps, my_
                 #             color, 2)
     except Exception as e:
         print(" Unexpected error in draw_boxes: "+ str(e))
+        my_logger.debug(str(datetime.now()) + ' ERROR ' + function_name  + ' camera_name: ' + camera_uuid + str(e))
+    my_logger.debug(str(datetime.now()) + ' END ' + function_name  + ' camera_name: ' + camera_uuid)
     return frame, object_data
 
 

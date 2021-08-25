@@ -111,10 +111,13 @@ def yolo(camera_name, network, class_names, is_wear):
             if queue_size > 200:
                 process = psutil.Process(os.getpid())
                 memory_used = (process.memory_info().rss) / 1024 ** 2  # in bytes 
-                my_logger.info(str(datetime.now()) + ' array_queue size = ' + str(queue_size) + 'memory used = ' + str(memory_used) )
+                my_logger.info(str(datetime.now()) + ' array_queue size = ' + str(queue_size) + 'memory used = ' + str(memory_used) + camera_name )
             if queue_size > 500:
                 for index in range(500):
                     object_image = array_queue[camera_name].get()
+                    print('memory release!')
+                queue_size = array_queue[camera_name].qsize()
+                my_logger.info(str(datetime.now()) + ' memory release! ' + camera_name + 'qsize = '+ str(queue_size))
             current_time = datetime.now().time()
             frame_info = object_image.name.split('_')
             fps = int(frame_info[0])
@@ -230,18 +233,23 @@ def read_camera_and_call_yolo(camera_config, network, class_names, is_wear):
                 ret_count += 1
                 if ret_count%55 >= 50:# and datetime.now().hour < 21:
                     print('time to work ', camera_name, datetime.now())
+                    ret_count = 0
                     my_logger.info(str(datetime.now()) + ' Reconnect camera ' + camera_name)
                     try:
                         cap.release()
                         cap = cv2.VideoCapture(camera_name)
-                        my_logger.info(str(datetime.now()) + ' Reconnect success! ' + camera_name)
+                        ret, frame = cap.read()
+                        if ret:
+                            my_logger.info(str(datetime.now()) + ' Reconnect success! ' + camera_name)
+                        else:
+                            print('Reconnect fail!')
                     except:
                         print('Reconnect fail!')
                         my_logger.error(str(datetime.now()) + ' Reconnect fail ' + camera_name)
                         time.sleep(10)
                 print('not ret', ret_count)
-                if ret_count > 550:
-                    break
+                #if ret_count > 550:
+                    #break
                 continue
             current_time = datetime.now().time()
 
@@ -259,6 +267,10 @@ def read_camera_and_call_yolo(camera_config, network, class_names, is_wear):
                 print(datetime.now(), ' peak time of ', camera_name, control_fps_count)
                 continue
             control_fps_count = 0
+
+            if array_queue_size > 600:
+                print('Program error, not release memory ' + camera_name)
+                my_logger.info(str(datetime.now()) + ' Program error, not release memory ' + 'array_queue_size = ' + str(array_queue_size) + camera_name)
             # fps_flag = not fps_flag
             # if fps_flag:
             #     continue
@@ -272,10 +284,9 @@ def read_camera_and_call_yolo(camera_config, network, class_names, is_wear):
                 if contour_count > 900:# setup config fps*countour_second
                     my_logger.info(str(datetime.now()) + ' Check motion in camera ' + camera_name)
                     check_ramdomly = 'check'
-                    contour_count = 0
                 else:
                     continue
-
+            contour_count = 0
             object_image = cl.image_container('%d_%d_%d_%s' %(fps,
                                                 time.time(), 
                                                 contour_count, 
@@ -339,7 +350,7 @@ json_objets ={}
 # Initial Log
 LOG_FILENAME = r'log\logging.out'
 my_logger = logging.getLogger('MyLogger')
-my_logger.setLevel(logging.INFO)
+my_logger.setLevel(logging.DEBUG)
 handler = logging.handlers.RotatingFileHandler(
               LOG_FILENAME, maxBytes=10240000, backupCount=100)
 my_logger.addHandler(handler)
