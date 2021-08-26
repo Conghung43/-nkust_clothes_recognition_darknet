@@ -16,8 +16,25 @@ import logging.handlers
 import inspect
 import psutil
 import re
+import requests
+import sys
 
+URL = 'https://notify-api.line.me/api/notify'
+os.environ["LINE_TOKEN"] = "M4lvxUHZrPEBDDdAmE27owB5CnC7Wkj2Dko08oJRqNf"
 array_queue = {}
+
+try:
+    token = os.environ['LINE_TOKEN']
+except KeyError:
+    sys.exit('LINE_TOKEN is not defined!')
+notify_message = "Clothes recognition program error, Please reset program"
+
+def send_message(token, msg, img=None):
+    """Send a LINE Notify message (with or without an image)."""
+    headers = {'Authorization': 'Bearer ' + token}
+    payload = {'message': msg}
+    r = requests.post(URL, headers=headers, params=payload)
+    return r.status_code
 
 def motion_detection(frame, static_back):
     try:
@@ -269,7 +286,9 @@ def read_camera_and_call_yolo(camera_config, network, class_names, is_wear):
             control_fps_count = 0
 
             if array_queue_size > 600:
-                print('Program error, not release memory ' + camera_name)
+                if array_queue_size < 605:
+                    status_code = send_message(token, notify_message)
+                    print('status_code = {}'.format(status_code))
                 my_logger.info(str(datetime.now()) + ' Program error, not release memory ' + 'array_queue_size = ' + str(array_queue_size) + camera_name)
             # fps_flag = not fps_flag
             # if fps_flag:
