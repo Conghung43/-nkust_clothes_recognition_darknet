@@ -151,7 +151,7 @@ def yolo(camera_name, network, class_names, is_wear):
                                         interpolation=cv2.INTER_LINEAR)
             darknet.copy_image_from_bytes(darknet_image, frame_resized.tobytes())
             while function_lock:
-                time.sleep(0.01)
+                time.sleep(0.1)
             function_lock = True
             detections = darknet.detect_image(network, class_names, darknet_image, thresh=0.25)
             function_lock = False
